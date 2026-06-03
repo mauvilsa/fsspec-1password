@@ -1,0 +1,95 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+
+[project]
+name = "fsspec-1password"
+dynamic = ["version"]
+description = "fsspec filesystem implementation for 1Password entries via the op CLI."
+authors = [
+    {name = "Mauricio Villegas", email = "mauricio@omnius.com"},
+]
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Topic :: Security",
+]
+
+dependencies = [
+    "fsspec>=2022.1.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=6.2.5",
+    "pytest-cov>=4.0.0",
+]
+dev = [
+    "fsspec-1password[test]",
+    "pre-commit>=2.19.0",
+    "build>=0.10.0",
+]
+maintainer = [
+    "bump2version>=0.5.11",
+]
+
+[project.entry-points."fsspec.specs"]
+op = "fsspec_1password.core:OnePasswordFileSystem"
+
+[project.urls]
+GitHub = "https://github.com/mauvilsa/fsspec-1password"
+PyPI = "https://pypi.org/project/fsspec-1password"
+
+
+[tool.setuptools]
+platforms = ["Any"]
+packages = ["fsspec_1password"]
+
+[tool.setuptools.dynamic]
+version = {attr = "fsspec_1password.__version__"}
+
+[tool.setuptools.package-data]
+fsspec_1password = ["py.typed"]
+
+
+[tool.pytest.ini_options]
+addopts = "-s"
+testpaths = ["fsspec_1password_tests"]
+
+
+[tool.coverage.run]
+relative_files = true
+source = ["fsspec_1password"]
+
+
+[tool.mypy]
+allow_redefinition = true
+warn_unused_ignores = true
+
+
+[tool.ruff]
+fix = true
+line-length = 120
+
+[tool.ruff.lint]
+select = [
+    "E", "W",  # pycodestyle
+    "F",       # pyflakes
+    "I",       # isort
+]
