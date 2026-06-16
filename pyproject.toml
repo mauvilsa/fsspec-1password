@@ -50,7 +50,10 @@ maintainer = [
 ]
 
 [project.entry-points."fsspec.specs"]
-op = "fsspec_1password.core:OnePasswordFileSystem"
+op = "fsspec_1password._core:OnePasswordFileSystem"
+
+[project.scripts]
+"op_fsspec_read" = "fsspec_1password._cli:op_read_cli"
 
 [project.urls]
 GitHub = "https://github.com/mauvilsa/fsspec-1password"

@@ -4,14 +4,17 @@ An [fsspec](https://filesystem-spec.readthedocs.io/) filesystem implementation f
 
 ## Overview
 
-`fsspec-1password` exposes your 1Password vaults, items, and fields as a read-only virtual filesystem under the `op://` protocol.  Any tool or library that speaks fsspec can transparently read secret values straight from 1Password – no files on disk, no environment variable juggling.
+`fsspec-1password` lets you read individual 1Password field values through the `op://` protocol.  Any tool or library that speaks fsspec can transparently read secret values straight from 1Password – no files on disk, no environment variable juggling.
 
-```
-op://                        ← root (list all vaults)
-op://Vault                   ← vault directory (list items)
-op://Vault/Item              ← item directory (list fields)
-op://Vault/Item/Field        ← field file (read secret value)
-```
+> **Scope:** Only full `op://Vault/Item/Field` or `op://Vault/Item/Section/Field` URIs are supported.  Accessing `op://`, `op://Vault`, or `op://Vault/Item` raises a `PermissionError` – this library is designed to read specific secrets, not to browse entire accounts or vaults.
+
+### Caching and sign-out
+
+When a field is first read, the entire `op://Vault/Item` is fetched in a single `op item get` call and all its fields are cached in memory.  `op signout` is then called immediately.  This means:
+
+* Each item access triggers **exactly one** user authorisation prompt.
+* Subsequent reads of any field from the same item are served from the cache – no further `op` calls, no additional prompts.
+* Accessing a field from a **different** item requires a new authorisation.
 
 ## Requirements
 
@@ -42,21 +45,13 @@ import fsspec_1password  # registers the op:// protocol with fsspec
 
 fs = fsspec_1password.OnePasswordFileSystem()
 
-# List all vaults
-fs.ls("op://")
-# [{'name': 'op://Personal', 'type': 'directory', 'size': 0}, ...]
-
-# List items in a vault
-fs.ls("op://Personal")
-# [{'name': 'op://Personal/GitHub', 'type': 'directory', 'size': 0}, ...]
-
-# List fields of an item
-fs.ls("op://Personal/GitHub")
-# [{'name': 'op://Personal/GitHub/username', 'type': 'file', 'size': 5}, ...]
-
-# Read a field value
+# Read a field value (triggers op authorisation the first time)
 secret = fs.cat_file("op://Personal/GitHub/password")
 # b's3cr3t'
+
+# Reading another field from the same item uses the cache – no extra prompt
+username = fs.cat_file("op://Personal/GitHub/username")
+# b'alice'
 
 with fs.open("op://Personal/GitHub/password") as f:
     secret = f.read()
@@ -92,17 +87,6 @@ Authentication is handled entirely by the `op` CLI.  Depending on your setup thi
 * **Service-account token** – set `OP_SERVICE_ACCOUNT_TOKEN` in the environment.
 
 Refer to the [1Password CLI documentation](https://developer.1password.com/docs/cli/) for full details.
-
-## URI scheme
-
-| Path | Description |
-|------|-------------|
-| `op://` | Root – directory listing returns all vaults |
-| `op://Vault` | Vault – directory listing returns all items |
-| `op://Vault/Item` | Item – directory listing returns all fields |
-| `op://Vault/Item/Field` | Field – readable file containing the secret value |
-
-`Vault`, `Item`, and `Field` refer to the **title/label** of the object, matching how you would address them with `op read op://Vault/Item/Field`.
 
 ## Development
 
