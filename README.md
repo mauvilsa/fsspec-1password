@@ -88,6 +88,42 @@ Authentication is handled entirely by the `op` CLI.  Depending on your setup thi
 
 Refer to the [1Password CLI documentation](https://developer.1password.com/docs/cli/) for full details.
 
+## Configuration
+
+### Environment variables
+
+The behavior of `fsspec-1password` can be controlled via environment variables:
+
+#### `OP_FSSPEC_SIGNOUT` (default: enabled)
+
+Controls whether `op signout` is called immediately after fetching an item.
+
+* **Enabled (default):** When not set, each field access triggers exactly one authorization prompt.  Sessions are terminated immediately after the item is fetched.
+* **Disabled:** Set to `false` (case-insensitive). Sessions remain active and expire after ~10 minutes.  This can be useful if you're accessing multiple items frequently and want to avoid repeated authorization prompts.
+
+Valid values: `true` or `false` (case-insensitive). Any other value raises `ValueError`.
+
+Example – disable automatic signout:
+```bash
+export OP_FSSPEC_SIGNOUT=false
+python my_script.py
+```
+
+#### `OP_FSSPEC_LOG_ACCESS` (default: enabled)
+
+Controls whether detailed field access is logged at WARNING level.
+
+* **Enabled (default):** When not set, each field access logs the URL and caller information.  This is useful for debugging and understanding which parts of your code are accessing 1Password secrets.
+* **Disabled:** Set to `false` (case-insensitive). No access logs are emitted.
+
+Valid values: `true` or `false` (case-insensitive). Any other value raises `ValueError`.
+
+Example – disable access logging:
+```bash
+export OP_FSSPEC_LOG_ACCESS=false
+python my_script.py
+```
+
 ## Development
 
 ```bash

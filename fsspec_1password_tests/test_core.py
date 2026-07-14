@@ -455,6 +455,212 @@ class TestCliErrors:
 
 
 # ---------------------------------------------------------------------------
+# Environment variable control: signout behavior
+# ---------------------------------------------------------------------------
+
+
+class TestSignoutControl:
+    def test_signout_called_by_default(self, fs, caplog):
+        """By default (no OP_FSSPEC_SIGNOUT), op signout should be called."""
+        with caplog.at_level(logging.WARNING, logger="fsspec_1password"):
+            with _patch_run({("item", "get", "GitHub", "--vault", "Personal", "--format=json"): ITEM_JSON}) as mock_run:
+                fs.cat_file("op://Personal/GitHub/password")
+
+        signout_calls = [c for c in mock_run.call_args_list if c == call("signout")]
+        assert len(signout_calls) == 1
+
+    def test_signout_disabled_via_false(self, fs, caplog, monkeypatch):
+        """When OP_FSSPEC_SIGNOUT=false, op signout should not be called."""
+        monkeypatch.setenv("OP_FSSPEC_SIGNOUT", "false")
+        with caplog.at_level(logging.WARNING, logger="fsspec_1password"):
+            with _patch_run({("item", "get", "GitHub", "--vault", "Personal", "--format=json"): ITEM_JSON}) as mock_run:
+                fs.cat_file("op://Personal/GitHub/password")
+
+        signout_calls = [c for c in mock_run.call_args_list if c == call("signout")]
+        assert len(signout_calls) == 0
+
+    def test_signout_disabled_via_false_uppercase(self, fs, caplog, monkeypatch):
+        """Case-insensitive parsing: OP_FSSPEC_SIGNOUT=FALSE also disables signout."""
+        monkeypatch.setenv("OP_FSSPEC_SIGNOUT", "FALSE")
+        with caplog.at_level(logging.WARNING, logger="fsspec_1password"):
+            with _patch_run({("item", "get", "GitHub", "--vault", "Personal", "--format=json"): ITEM_JSON}) as mock_run:
+                fs.cat_file("op://Personal/GitHub/password")
+
+        signout_calls = [c for c in mock_run.call_args_list if c == call("signout")]
+        assert len(signout_calls) == 0
+
+    def test_signout_enabled_via_true(self, fs, caplog, monkeypatch):
+        """When OP_FSSPEC_SIGNOUT=true, op signout should be called."""
+        monkeypatch.setenv("OP_FSSPEC_SIGNOUT", "true")
+        with caplog.at_level(logging.WARNING, logger="fsspec_1password"):
+            with _patch_run({("item", "get", "GitHub", "--vault", "Personal", "--format=json"): ITEM_JSON}) as mock_run:
+                fs.cat_file("op://Personal/GitHub/password")
+
+        signout_calls = [c for c in mock_run.call_args_list if c == call("signout")]
+        assert len(signout_calls) == 1
+
+    def test_signout_enabled_via_true_mixed_case(self, fs, caplog, monkeypatch):
+        """Case-insensitive parsing: OP_FSSPEC_SIGNOUT=True also enables signout."""
+        monkeypatch.setenv("OP_FSSPEC_SIGNOUT", "True")
+        with caplog.at_level(logging.WARNING, logger="fsspec_1password"):
+            with _patch_run({("item", "get", "GitHub", "--vault", "Personal", "--format=json"): ITEM_JSON}) as mock_run:
+                fs.cat_file("op://Personal/GitHub/password")
+
+        signout_calls = [c for c in mock_run.call_args_list if c == call("signout")]
+        assert len(signout_calls) == 1
+
+    def test_signout_rejects_invalid_value_zero(self, fs, monkeypatch):
+        """Invalid value '0' should raise ValueError with clear message."""
+        monkeypatch.setenv("OP_FSSPEC_SIGNOUT", "0")
+        with pytest.raises(ValueError, match="OP_FSSPEC_SIGNOUT.*invalid.*true.*false"):
+            with _patch_run({("item", "get", "GitHub", "--vault", "Personal", "--format=json"): ITEM_JSON}):
+                fs.cat_file("op://Personal/GitHub/password")
+
+    def test_signout_rejects_invalid_value_one(self, fs, monkeypatch):
+        """Invalid value '1' should raise ValueError with clear message."""
+        monkeypatch.setenv("OP_FSSPEC_SIGNOUT", "1")
+        with pytest.raises(ValueError, match="OP_FSSPEC_SIGNOUT.*invalid.*true.*false"):
+            with _patch_run({("item", "get", "GitHub", "--vault", "Personal", "--format=json"): ITEM_JSON}):
+                fs.cat_file("op://Personal/GitHub/password")
+
+    def test_signout_rejects_empty_string(self, fs, monkeypatch):
+        """Empty string should raise ValueError with clear message."""
+        monkeypatch.setenv("OP_FSSPEC_SIGNOUT", "")
+        with pytest.raises(ValueError, match="OP_FSSPEC_SIGNOUT.*invalid.*true.*false"):
+            with _patch_run({("item", "get", "GitHub", "--vault", "Personal", "--format=json"): ITEM_JSON}):
+                fs.cat_file("op://Personal/GitHub/password")
+
+    def test_signout_rejects_yes_no(self, fs, monkeypatch):
+        """'yes'/'no' should not be accepted."""
+        monkeypatch.setenv("OP_FSSPEC_SIGNOUT", "yes")
+        with pytest.raises(ValueError, match="OP_FSSPEC_SIGNOUT.*invalid.*true.*false"):
+            with _patch_run({("item", "get", "GitHub", "--vault", "Personal", "--format=json"): ITEM_JSON}):
+                fs.cat_file("op://Personal/GitHub/password")
+
+
+# ---------------------------------------------------------------------------
+# Environment variable control: logging behavior
+# ---------------------------------------------------------------------------
+
+
+class TestLoggingControl:
+    def test_access_logged_by_default(self, fs, caplog):
+        """By default (no OP_FSSPEC_LOG_ACCESS), field access should be logged."""
+        with caplog.at_level(logging.WARNING, logger="fsspec_1password"):
+            with _patch_run({("item", "get", "GitHub", "--vault", "Personal", "--format=json"): ITEM_JSON}):
+                fs.cat_file("op://Personal/GitHub/password")
+
+        assert any("op://Personal/GitHub/password" in r.message for r in caplog.records)
+
+    def test_access_logging_disabled_via_false(self, fs, caplog, monkeypatch):
+        """When OP_FSSPEC_LOG_ACCESS=false, field access should not be logged."""
+        monkeypatch.setenv("OP_FSSPEC_LOG_ACCESS", "false")
+        with caplog.at_level(logging.WARNING, logger="fsspec_1password"):
+            with _patch_run({("item", "get", "GitHub", "--vault", "Personal", "--format=json"): ITEM_JSON}):
+                fs.cat_file("op://Personal/GitHub/password")
+
+        assert not any("op://Personal/GitHub/password" in r.message for r in caplog.records)
+
+    def test_access_logging_disabled_via_false_uppercase(self, fs, caplog, monkeypatch):
+        """Case-insensitive parsing: OP_FSSPEC_LOG_ACCESS=FALSE also disables logging."""
+        monkeypatch.setenv("OP_FSSPEC_LOG_ACCESS", "FALSE")
+        with caplog.at_level(logging.WARNING, logger="fsspec_1password"):
+            with _patch_run({("item", "get", "GitHub", "--vault", "Personal", "--format=json"): ITEM_JSON}):
+                fs.cat_file("op://Personal/GitHub/password")
+
+        assert not any("op://Personal/GitHub/password" in r.message for r in caplog.records)
+
+    def test_access_logging_enabled_via_true(self, fs, caplog, monkeypatch):
+        """When OP_FSSPEC_LOG_ACCESS=true, field access should be logged."""
+        monkeypatch.setenv("OP_FSSPEC_LOG_ACCESS", "true")
+        with caplog.at_level(logging.WARNING, logger="fsspec_1password"):
+            with _patch_run({("item", "get", "GitHub", "--vault", "Personal", "--format=json"): ITEM_JSON}):
+                fs.cat_file("op://Personal/GitHub/password")
+
+        assert any("op://Personal/GitHub/password" in r.message for r in caplog.records)
+
+    def test_access_logging_enabled_via_true_mixed_case(self, fs, caplog, monkeypatch):
+        """Case-insensitive parsing: OP_FSSPEC_LOG_ACCESS=True also enables logging."""
+        monkeypatch.setenv("OP_FSSPEC_LOG_ACCESS", "True")
+        with caplog.at_level(logging.WARNING, logger="fsspec_1password"):
+            with _patch_run({("item", "get", "GitHub", "--vault", "Personal", "--format=json"): ITEM_JSON}):
+                fs.cat_file("op://Personal/GitHub/password")
+
+        assert any("op://Personal/GitHub/password" in r.message for r in caplog.records)
+
+    def test_logging_disabled_still_caches(self, fs, caplog, monkeypatch):
+        """With logging disabled, caching should still work and no extra log for second access."""
+        monkeypatch.setenv("OP_FSSPEC_LOG_ACCESS", "false")
+        with caplog.at_level(logging.WARNING, logger="fsspec_1password"):
+            with _patch_run({("item", "get", "GitHub", "--vault", "Personal", "--format=json"): ITEM_JSON}) as mock_run:
+                fs.cat_file("op://Personal/GitHub/username")
+                call_count_after_first = mock_run.call_count
+                fs.cat_file("op://Personal/GitHub/password")
+                call_count_after_second = mock_run.call_count
+
+        # Second read should not trigger additional op calls (caching works)
+        assert call_count_after_second == call_count_after_first
+        # But no logs at all since logging is disabled
+        assert not any("op://Personal/GitHub" in r.message for r in caplog.records)
+
+    def test_multiple_accesses_same_field_logs_once_when_enabled(self, fs, caplog, monkeypatch):
+        """Re-reading the same field should only log once even when logging is enabled."""
+        monkeypatch.setenv("OP_FSSPEC_LOG_ACCESS", "true")
+        with caplog.at_level(logging.WARNING, logger="fsspec_1password"):
+            with _patch_run({("item", "get", "GitHub", "--vault", "Personal", "--format=json"): ITEM_JSON}):
+                fs.cat_file("op://Personal/GitHub/password")
+                fs.cat_file("op://Personal/GitHub/password")
+
+        password_warnings = [r for r in caplog.records if "op://Personal/GitHub/password" in r.message]
+        assert len(password_warnings) == 1
+
+    def test_logging_rejects_invalid_value_zero(self, fs, monkeypatch):
+        """Invalid value '0' should raise ValueError with clear message."""
+        monkeypatch.setenv("OP_FSSPEC_LOG_ACCESS", "0")
+        with pytest.raises(ValueError, match="OP_FSSPEC_LOG_ACCESS.*invalid.*true.*false"):
+            with _patch_run({("item", "get", "GitHub", "--vault", "Personal", "--format=json"): ITEM_JSON}):
+                fs.cat_file("op://Personal/GitHub/password")
+
+    def test_logging_rejects_empty_string(self, fs, monkeypatch):
+        """Empty string should raise ValueError with clear message."""
+        monkeypatch.setenv("OP_FSSPEC_LOG_ACCESS", "")
+        with pytest.raises(ValueError, match="OP_FSSPEC_LOG_ACCESS.*invalid.*true.*false"):
+            with _patch_run({("item", "get", "GitHub", "--vault", "Personal", "--format=json"): ITEM_JSON}):
+                fs.cat_file("op://Personal/GitHub/password")
+
+
+# ---------------------------------------------------------------------------
+# Environment variable interaction: both disabled
+# ---------------------------------------------------------------------------
+
+
+class TestEnvVarInteraction:
+    def test_both_signout_and_logging_disabled(self, fs, caplog, monkeypatch):
+        """Both signout and logging can be disabled simultaneously."""
+        monkeypatch.setenv("OP_FSSPEC_SIGNOUT", "false")
+        monkeypatch.setenv("OP_FSSPEC_LOG_ACCESS", "false")
+        with caplog.at_level(logging.WARNING, logger="fsspec_1password"):
+            with _patch_run({("item", "get", "GitHub", "--vault", "Personal", "--format=json"): ITEM_JSON}) as mock_run:
+                fs.cat_file("op://Personal/GitHub/password")
+
+        signout_calls = [c for c in mock_run.call_args_list if c == call("signout")]
+        assert len(signout_calls) == 0
+        assert not any("op://Personal/GitHub" in r.message for r in caplog.records)
+
+    def test_both_signout_and_logging_enabled(self, fs, caplog, monkeypatch):
+        """Both signout and logging can be enabled explicitly."""
+        monkeypatch.setenv("OP_FSSPEC_SIGNOUT", "true")
+        monkeypatch.setenv("OP_FSSPEC_LOG_ACCESS", "true")
+        with caplog.at_level(logging.WARNING, logger="fsspec_1password"):
+            with _patch_run({("item", "get", "GitHub", "--vault", "Personal", "--format=json"): ITEM_JSON}) as mock_run:
+                fs.cat_file("op://Personal/GitHub/password")
+
+        signout_calls = [c for c in mock_run.call_args_list if c == call("signout")]
+        assert len(signout_calls) == 1
+        assert any("op://Personal/GitHub/password" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
 # Version
 # ---------------------------------------------------------------------------
 
