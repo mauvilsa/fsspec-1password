@@ -11,12 +11,21 @@ When a field is first read the entire ``op://Vault/Item`` is fetched via
 immediately so that each item access requires exactly one user authorisation.
 Subsequent reads of any field belonging to the same item are served from the
 in-memory cache without any CLI interaction.
+
+Environment variables:
+  OP_FSSPEC_SIGNOUT: Set to "true" or "false" (case-insensitive) to control
+                      whether op signout is called after item fetch.
+                      If not set, defaults to true. Any other value raises ValueError.
+  OP_FSSPEC_LOG_ACCESS: Set to "true" or "false" (case-insensitive) to control
+                         whether field access is logged at WARNING level.
+                         If not set, defaults to true. Any other value raises ValueError.
 """
 
 import inspect
 import io
 import json
 import logging
+import os
 import shutil
 import subprocess
 from typing import Any
@@ -33,6 +42,60 @@ logger.addHandler(handler)
 _PARTIAL_PATH_ERROR = (
     "fsspec-1password only supports reading specific fields. Use op://Vault/Item/Field to access a secret."
 )
+
+
+def _parse_bool_env(value: str | None) -> bool:
+    """Strictly parse a boolean environment variable value.
+
+    Args:
+        value: Environment variable value (non-None).
+
+    Returns:
+        True for "true" (case-insensitive), False for "false" (case-insensitive).
+
+    Raises:
+        ValueError: If value is not "true" or "false" (case-insensitive).
+    """
+    value_lower = value.lower().strip()
+    if value_lower == "true":
+        return True
+    if value_lower == "false":
+        return False
+    raise ValueError(f"Invalid boolean value: {value!r}. Expected 'true' or 'false' (case-insensitive).")
+
+
+def _should_signout() -> bool:
+    """Check if op signout should be called after item fetch.
+
+    Controlled by OP_FSSPEC_SIGNOUT env var. If not set, defaults to True.
+    Must be "true" or "false" (case-insensitive) if set.
+    """
+    value = os.environ.get("OP_FSSPEC_SIGNOUT")
+    if value is None:
+        return True
+    try:
+        return _parse_bool_env(value)
+    except ValueError:
+        raise ValueError(
+            f"OP_FSSPEC_SIGNOUT={value!r} is invalid. Must be 'true' or 'false' (case-insensitive)."
+        ) from None
+
+
+def _should_log_access() -> bool:
+    """Check if field access should be logged.
+
+    Controlled by OP_FSSPEC_LOG_ACCESS env var. If not set, defaults to True.
+    Must be "true" or "false" (case-insensitive) if set.
+    """
+    value = os.environ.get("OP_FSSPEC_LOG_ACCESS")
+    if value is None:
+        return True
+    try:
+        return _parse_bool_env(value)
+    except ValueError:
+        raise ValueError(
+            f"OP_FSSPEC_LOG_ACCESS={value!r} is invalid. Must be 'true' or 'false' (case-insensitive)."
+        ) from None
 
 
 def _get_caller() -> str:
@@ -137,7 +200,10 @@ class OnePasswordFileSystem(AbstractFileSystem):
     # ------------------------------------------------------------------
 
     def _load_item_to_cache(self, vault: str, item: str) -> None:
-        """Fetch an entire item, cache all its fields, then sign out."""
+        """Fetch an entire item, cache all its fields, then optionally sign out.
+
+        Whether to call op signout is controlled by OP_FSSPEC_SIGNOUT env var.
+        """
         raw = _run_op("item", "get", item, "--vault", vault, "--format=json")
         item_data = json.loads(raw)
         fields: dict[str, str] = {}
@@ -153,13 +219,17 @@ class OnePasswordFileSystem(AbstractFileSystem):
             if label:
                 fields[label] = u.get("href", "") or ""
         self._item_cache[(vault, item)] = fields
-        _run_op("signout")
+        if _should_signout():
+            _run_op("signout")
 
     def _get_cached_field(self, vault: str, item: str, field: str) -> str:
-        """Return a field value, loading the item cache if necessary."""
+        """Return a field value, loading the item cache if necessary.
+
+        Field access is logged (controlled by OP_FSSPEC_LOG_ACCESS env var).
+        """
         caller = _get_caller()
         url = f"op://{vault}/{item}/{field}"
-        if (url, caller) not in self._access_warnings_emitted:
+        if _should_log_access() and (url, caller) not in self._access_warnings_emitted:
             logger.warning("'%s' ACCESSED BY:\n%s", url, caller)
             self._access_warnings_emitted.add((url, caller))
         if (vault, item) not in self._item_cache:
