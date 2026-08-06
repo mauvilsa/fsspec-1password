@@ -455,6 +455,122 @@ class TestCliErrors:
 
 
 # ---------------------------------------------------------------------------
+# Signout on failure – signout must happen even when the item fetch fails
+# ---------------------------------------------------------------------------
+
+
+def _patch_run_item_get_failing(error: Exception, signout_error: Exception | None = None):
+    """Patch _run_op so that `op item get` fails and `op signout` succeeds (or fails)."""
+
+    def _fake_run(*args, **kwargs):
+        if args[:2] == ("item", "get"):
+            raise error
+        if args == ("signout",):
+            if signout_error is not None:
+                raise signout_error
+            return ""
+        raise KeyError(f"Unexpected op args: {args}")
+
+    return patch("fsspec_1password._core._run_op", side_effect=_fake_run)
+
+
+class TestSignoutOnFailure:
+    """Regression tests: a failed item fetch must still sign out.
+
+    When the 1Password app itself requires a login (web page round trip), the
+    `op item get` call fails with a permission error.  The user then completes
+    the login, which leaves the CLI signed in.  Without a signout the next run
+    reads the item with no authorisation prompt at all.
+    """
+
+    def test_signout_called_when_item_get_fails(self, fs):
+        err = PermissionError("op CLI returned non-zero exit code 1: authorization prompt dismissed")
+        with _patch_run_item_get_failing(err) as mock_run:
+            with pytest.raises(PermissionError, match="authorization prompt dismissed"):
+                fs.cat_file("op://Personal/GitHub/password")
+
+        signout_calls = [c for c in mock_run.call_args_list if c == call("signout")]
+        assert len(signout_calls) == 1
+
+    def test_signout_called_when_item_json_is_invalid(self, fs):
+        with _patch_run({("item", "get", "GitHub", "--vault", "Personal", "--format=json"): "not json"}) as mock_run:
+            with pytest.raises(json.JSONDecodeError):
+                fs.cat_file("op://Personal/GitHub/password")
+
+        signout_calls = [c for c in mock_run.call_args_list if c == call("signout")]
+        assert len(signout_calls) == 1
+
+    def test_failed_item_get_is_not_cached(self, fs):
+        err = PermissionError("op CLI returned non-zero exit code 1: not signed in")
+        with _patch_run_item_get_failing(err):
+            with pytest.raises(PermissionError):
+                fs.cat_file("op://Personal/GitHub/password")
+
+        assert ("Personal", "GitHub") not in fs._item_cache
+
+    def test_original_error_propagates_when_signout_also_fails(self, fs):
+        """A failing signout must not mask the error that caused the failure."""
+        err = PermissionError("op CLI returned non-zero exit code 1: not signed in")
+        signout_err = PermissionError("op CLI returned non-zero exit code 1: signout failed")
+        with _patch_run_item_get_failing(err, signout_error=signout_err):
+            with pytest.raises(PermissionError, match="not signed in"):
+                fs.cat_file("op://Personal/GitHub/password")
+
+    def test_signout_failure_after_successful_fetch_still_raises(self, fs):
+        """When the fetch succeeded, a failing signout must surface to the caller."""
+
+        def _fake_run(*args, **kwargs):
+            if args[:2] == ("item", "get"):
+                return ITEM_JSON
+            raise PermissionError("op CLI returned non-zero exit code 1: signout failed")
+
+        with patch("fsspec_1password._core._run_op", side_effect=_fake_run):
+            with pytest.raises(PermissionError, match="signout failed"):
+                fs.cat_file("op://Personal/GitHub/password")
+
+    def test_no_signout_on_failure_when_disabled(self, fs, monkeypatch):
+        monkeypatch.setenv("OP_FSSPEC_SIGNOUT", "false")
+        err = PermissionError("op CLI returned non-zero exit code 1: not signed in")
+        with _patch_run_item_get_failing(err) as mock_run:
+            with pytest.raises(PermissionError, match="not signed in"):
+                fs.cat_file("op://Personal/GitHub/password")
+
+        signout_calls = [c for c in mock_run.call_args_list if c == call("signout")]
+        assert len(signout_calls) == 0
+
+    def test_signout_on_failure_via_subprocess(self, fs):
+        """End-to-end at the subprocess level: `op signout` is actually spawned."""
+        item_get_error = subprocess.CalledProcessError(
+            1, "op", stderr="[ERROR] 2024/01/01 you are not currently signed in"
+        )
+        calls = []
+
+        def _fake_subprocess_run(cmd, **kwargs):
+            calls.append(cmd)
+            if "signout" in cmd:
+                return _completed("")
+            raise item_get_error
+
+        with (
+            patch("fsspec_1password._core.shutil.which", return_value="/usr/bin/op"),
+            patch("fsspec_1password._core.subprocess.run", side_effect=_fake_subprocess_run),
+        ):
+            with pytest.raises(PermissionError, match="not currently signed in"):
+                fs.cat_file("op://Personal/GitHub/password")
+
+        assert calls == [
+            ["/usr/bin/op", "item", "get", "GitHub", "--vault", "Personal", "--format=json"],
+            ["/usr/bin/op", "signout"],
+        ]
+
+    def test_op_missing_still_raises_runtime_error(self, fs):
+        """With op absent the signout attempt must not mask the RuntimeError."""
+        with patch("fsspec_1password._core.shutil.which", return_value=None):
+            with pytest.raises(RuntimeError, match="PATH"):
+                fs.cat_file("op://Personal/GitHub/password")
+
+
+# ---------------------------------------------------------------------------
 # Environment variable control: signout behavior
 # ---------------------------------------------------------------------------
 

@@ -8,9 +8,9 @@ vaults.
 
 When a field is first read the entire ``op://Vault/Item`` is fetched via
 ``op item get`` and all its fields are cached.  ``op signout`` is then run
-immediately so that each item access requires exactly one user authorisation.
-Subsequent reads of any field belonging to the same item are served from the
-in-memory cache without any CLI interaction.
+immediately – also when the fetch failed – so that each item access requires
+exactly one user authorisation.  Subsequent reads of any field belonging to the
+same item are served from the in-memory cache without any CLI interaction.
 
 Environment variables:
   OP_FSSPEC_SIGNOUT: Set to "true" or "false" (case-insensitive) to control
@@ -176,9 +176,10 @@ class OnePasswordFileSystem(AbstractFileSystem):
     -------
     On the first access to any field of an item the entire item is fetched
     with ``op item get`` and all its fields are stored in an in-memory cache.
-    ``op signout`` is then called immediately, so each item requires exactly
-    one user authorisation.  Repeated reads of any field of the same item
-    are served from the cache with no further CLI calls.
+    ``op signout`` is then called immediately – including when the fetch
+    failed – so each item requires exactly one user authorisation.  Repeated
+    reads of any field of the same item are served from the cache with no
+    further CLI calls.
 
     Authentication
     --------------
@@ -202,25 +203,48 @@ class OnePasswordFileSystem(AbstractFileSystem):
     def _load_item_to_cache(self, vault: str, item: str) -> None:
         """Fetch an entire item, cache all its fields, then optionally sign out.
 
+        The signout also runs when the fetch fails.  A failing fetch can itself
+        leave the CLI signed in – e.g. when the 1Password app requires a login
+        and the user completes it after the fetch already errored out – so
+        skipping the signout would let the next run read the item without any
+        authorisation prompt.
+
         Whether to call op signout is controlled by OP_FSSPEC_SIGNOUT env var.
         """
-        raw = _run_op("item", "get", item, "--vault", vault, "--format=json")
-        item_data = json.loads(raw)
-        fields: dict[str, str] = {}
-        for f in item_data.get("fields", []):
-            label = f.get("label") or f.get("id", "")
-            if label:
-                section = f.get("section", {}).get("label")
-                if section:
-                    label = f"{section}/{label}"
-                fields[label] = f.get("value", "") or ""
-        for u in item_data.get("urls", []):
-            label = u.get("label")
-            if label:
-                fields[label] = u.get("href", "") or ""
-        self._item_cache[(vault, item)] = fields
-        if _should_signout():
-            _run_op("signout")
+        fetch_failed = True
+        try:
+            raw = _run_op("item", "get", item, "--vault", vault, "--format=json")
+            item_data = json.loads(raw)
+            fields: dict[str, str] = {}
+            for f in item_data.get("fields", []):
+                label = f.get("label") or f.get("id", "")
+                if label:
+                    section = f.get("section", {}).get("label")
+                    if section:
+                        label = f"{section}/{label}"
+                    fields[label] = f.get("value", "") or ""
+            for u in item_data.get("urls", []):
+                label = u.get("label")
+                if label:
+                    fields[label] = u.get("href", "") or ""
+            self._item_cache[(vault, item)] = fields
+            fetch_failed = False
+        finally:
+            self._signout(suppress_errors=fetch_failed)
+
+    def _signout(self, suppress_errors: bool = False) -> None:
+        """Run ``op signout`` unless disabled via OP_FSSPEC_SIGNOUT.
+
+        When ``suppress_errors`` is true, failures are logged instead of raised
+        so that they do not mask the error that is already propagating.
+        """
+        try:
+            if _should_signout():
+                _run_op("signout")
+        except Exception as exc:
+            if not suppress_errors:
+                raise
+            logger.warning("op signout after a failed item fetch did not succeed: %s", exc)
 
     def _get_cached_field(self, vault: str, item: str, field: str) -> str:
         """Return a field value, loading the item cache if necessary.
