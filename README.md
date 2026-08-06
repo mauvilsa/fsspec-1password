@@ -15,6 +15,7 @@ When a field is first read, the entire `op://Vault/Item` is fetched in a single 
 * Each item access triggers **exactly one** user authorisation prompt.
 * Subsequent reads of any field from the same item are served from the cache – no further `op` calls, no additional prompts.
 * Accessing a field from a **different** item requires a new authorisation.
+* `op signout` is called even when the fetch fails, so a failure cannot leave the CLI signed in.
 
 ## Requirements
 
