@@ -110,18 +110,30 @@ export OP_FSSPEC_SIGNOUT=false
 python my_script.py
 ```
 
-#### `OP_FSSPEC_LOG_ACCESS` (default: enabled)
+#### `OP_FSSPEC_ACCESS_LOG_DETAIL` (default: `3`)
 
-Controls whether detailed field access is logged at WARNING level.
+Controls how much detail about secret access is logged at WARNING level.
 
-* **Enabled (default):** When not set, each field access logs the URL and caller information.  This is useful for debugging and understanding which parts of your code are accessing 1Password secrets.
-* **Disabled:** Set to `false` (case-insensitive). No access logs are emitted.
+| Level | What is logged | Example |
+| ----- | -------------- | ------- |
+| `0` | Nothing | |
+| `1` | Item access only – which item was read, but not which field, nor from where in the code | `'op://Personal/GitHub' ACCESSED` |
+| `2` | Item and field access, but not from where in the code | `'op://Personal/GitHub/password' ACCESSED` |
+| `3` (default) | Item and field access plus the call stack location that triggered it | `'op://Personal/GitHub/password' ACCESSED BY:`<br>`  my_app/config.py:load:17` |
 
-Valid values: `true` or `false` (case-insensitive). Any other value raises `ValueError`.
+Each distinct entry is logged only once.  The deduplication is as coarse as the level: at level `1` an item is logged once no matter how many of its fields are read, at level `2` once per field, and at level `3` once per field-and-caller combination.
 
-Example – disable access logging:
+Valid values: `0`, `1`, `2` or `3`. Any other value raises `ValueError`.
+
+Example – log which items are read, without revealing field names or code locations:
 ```bash
-export OP_FSSPEC_LOG_ACCESS=false
+export OP_FSSPEC_ACCESS_LOG_DETAIL=1
+python my_script.py
+```
+
+Example – disable access logging entirely:
+```bash
+export OP_FSSPEC_ACCESS_LOG_DETAIL=0
 python my_script.py
 ```
 
