@@ -62,7 +62,7 @@ _PARTIAL_PATH_ERROR = (
 )
 
 
-def _parse_bool_env(value: str | None) -> bool:
+def _parse_bool_env(value: str) -> bool:
     """Strictly parse a boolean environment variable value.
 
     Args:
@@ -275,7 +275,7 @@ class OnePasswordFileSystem(AbstractFileSystem):
     def info(self, path: str, **kwargs: Any) -> dict:
         vault, item, field = _parse_path(path)
 
-        if field is None:
+        if vault is None or item is None or field is None:
             self._deny_partial_path(path)
 
         value = self._get_cached_field(vault, item, field)
