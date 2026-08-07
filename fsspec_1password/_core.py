@@ -12,54 +12,54 @@ immediately – also when the fetch failed – so that each item access requires
 exactly one user authorisation.  Subsequent reads of any field belonging to the
 same item are served from the in-memory cache without any CLI interaction.
 
+Every access is logged, to the console and to an audit file – see
+``fsspec_1password._logging`` for the sinks and their configuration.
+
 Environment variables:
   OP_FSSPEC_SIGNOUT: Set to "true" or "false" (case-insensitive) to control
                       whether op signout is called after item fetch.
                       If not set, defaults to true. Any other value raises ValueError.
-  OP_FSSPEC_ACCESS_LOG_DETAIL: How much detail the access log emitted at WARNING
-                      level includes:
+  OP_FSSPEC_CONSOLE_LOG_DETAIL: How much detail the console access log includes.
+                      Higher levels add information, they never remove any:
                         "0" nothing is logged;
-                        "1" item access only, e.g. 'op://Vault/Item';
-                        "2" item and field access, e.g. 'op://Vault/Item/Field';
-                        "3" item and field access plus the code location that
-                            triggered it.
-                      If not set, defaults to "3". Any other value raises ValueError.
+                        "1" items being fetched and cached, e.g. 'op://Vault/Item';
+                        "2" the above plus each field access, e.g.
+                            'op://Vault/Item/Field';
+                        "3" the above plus the code location that triggered
+                            the field access.
+                      If not set, defaults to "2". Any other value raises ValueError.
+                      This affects the console only – the audit file is always
+                      written at full detail.
+  OP_FSSPEC_AUDIT_LOG_FILE: Where the JSON Lines audit log is written.
+                      Defaults to $XDG_STATE_HOME/fsspec-1password/audit.log,
+                      i.e. ~/.local/state/fsspec-1password/audit.log.
+                      Set to "none" to disable it.
+  OP_FSSPEC_AUDIT_LOG_RUN_ID: Identifier shared by every record from this process.
+                      Defaults to a random per-process value. Set it to
+                      correlate several processes of the same job.
 """
 
-import inspect
 import io
 import json
-import logging
 import os
 import shutil
 import subprocess
-from typing import Any
+from typing import Any, NoReturn
 
 from fsspec.spec import AbstractFileSystem
 
-logger = logging.getLogger("fsspec_1password")
-logger.setLevel(logging.WARNING)
-handler = logging.StreamHandler()
-handler.setLevel(logging.WARNING)
-handler.setFormatter(logging.Formatter(fmt="%(asctime)s %(levelname)s %(message)s"))
-logger.addHandler(handler)
+from ._logging import (
+    log_access_denied,
+    log_field_access,
+    log_item_cached,
+    log_item_fetch_failed,
+    log_signout_failed,
+    logger,
+)
 
 _PARTIAL_PATH_ERROR = (
     "fsspec-1password only supports reading specific fields. Use op://Vault/Item/Field to access a secret."
 )
-
-# OP_FSSPEC_ACCESS_LOG_DETAIL levels, from least to most detailed
-ACCESS_LOG_NONE = 0
-ACCESS_LOG_ITEM = 1
-ACCESS_LOG_FIELD = 2
-ACCESS_LOG_CALLER = 3
-
-_ACCESS_LOG_DETAILS = {
-    "0": ACCESS_LOG_NONE,
-    "1": ACCESS_LOG_ITEM,
-    "2": ACCESS_LOG_FIELD,
-    "3": ACCESS_LOG_CALLER,
-}
 
 
 def _parse_bool_env(value: str | None) -> bool:
@@ -97,45 +97,6 @@ def _should_signout() -> bool:
         raise ValueError(
             f"OP_FSSPEC_SIGNOUT={value!r} is invalid. Must be 'true' or 'false' (case-insensitive)."
         ) from None
-
-
-def _access_log_detail() -> int:
-    """Return how verbose the access log should be.
-
-    Controlled by OP_FSSPEC_ACCESS_LOG_DETAIL env var. If not set, defaults to
-    ACCESS_LOG_CALLER (3), i.e. the most detailed level.
-
-    Returns:
-        ACCESS_LOG_NONE (0): nothing is logged.
-        ACCESS_LOG_ITEM (1): item access only, without the field name.
-        ACCESS_LOG_FIELD (2): item and field access.
-        ACCESS_LOG_CALLER (3): item and field access plus the calling code location.
-
-    Raises:
-        ValueError: If the env var is set to anything other than "0", "1", "2" or "3".
-    """
-    value = os.environ.get("OP_FSSPEC_ACCESS_LOG_DETAIL")
-    if value is None:
-        return ACCESS_LOG_CALLER
-    level = _ACCESS_LOG_DETAILS.get(value.strip())
-    if level is None:
-        raise ValueError(
-            f"OP_FSSPEC_ACCESS_LOG_DETAIL={value!r} is invalid. Must be '0' (no logging), '1' (item access), "
-            "'2' (item and field access) or '3' (item and field access with code location)."
-        )
-    return level
-
-
-def _get_caller() -> str:
-    caller = None
-    for frame_info in inspect.stack():
-        module = frame_info.frame.f_globals.get("__name__", "")
-        if not module or module.startswith("fsspec"):
-            continue
-        path = "/".join(frame_info.filename.split("/")[-len(module.split(".")) :])
-        location = f"{path}:{frame_info.function}:{frame_info.lineno}"
-        caller = f"{location}" + ("\n  -> " + caller if caller else "")
-    return "  " + (caller or "<unknown>")
 
 
 def _require_op() -> str:
@@ -222,7 +183,6 @@ class OnePasswordFileSystem(AbstractFileSystem):
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._item_cache: dict[tuple[str, str], dict[str, str]] = {}
-        self._access_warnings_emitted: set[tuple] = set()
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -257,6 +217,12 @@ class OnePasswordFileSystem(AbstractFileSystem):
                     fields[label] = u.get("href", "") or ""
             self._item_cache[(vault, item)] = fields
             fetch_failed = False
+            # Logged before the signout attempt: the item is cached and
+            # readable at this point, whether or not the signout succeeds.
+            log_item_cached(vault, item)
+        except Exception as exc:
+            log_item_fetch_failed(vault, item, exc)
+            raise
         finally:
             self._signout(suppress_errors=fetch_failed)
 
@@ -272,42 +238,15 @@ class OnePasswordFileSystem(AbstractFileSystem):
         except Exception as exc:
             if not suppress_errors:
                 raise
-            logger.warning("op signout after a failed item fetch did not succeed: %s", exc)
-
-    def _log_access(self, vault: str, item: str, field: str) -> None:
-        """Log an access at the verbosity given by OP_FSSPEC_ACCESS_LOG_DETAIL.
-
-        Each distinct log entry is emitted only once, so the deduplication key
-        is as coarse as the level: per item for level 1, per field for level 2
-        and per field-and-caller for level 3.
-        """
-        level = _access_log_detail()
-        if level == ACCESS_LOG_NONE:
-            return
-
-        if level == ACCESS_LOG_ITEM:
-            key: tuple = (level, vault, item)
-            message, args = "'op://%s/%s' ACCESSED", (vault, item)
-        else:
-            url = f"op://{vault}/{item}/{field}"
-            if level == ACCESS_LOG_FIELD:
-                key = (level, url)
-                message, args = "'%s' ACCESSED", (url,)
-            else:
-                caller = _get_caller()
-                key = (level, url, caller)
-                message, args = "'%s' ACCESSED BY:\n%s", (url, caller)
-
-        if key not in self._access_warnings_emitted:
-            logger.warning(message, *args)
-            self._access_warnings_emitted.add(key)
+            log_signout_failed(exc)
 
     def _get_cached_field(self, vault: str, item: str, field: str) -> str:
         """Return a field value, loading the item cache if necessary.
 
-        Field access is logged (controlled by OP_FSSPEC_ACCESS_LOG_DETAIL env var).
+        The access is logged before the value is looked up, so that a read of a
+        field that turns out not to exist is recorded too.
         """
-        self._log_access(vault, item, field)
+        log_field_access(vault, item, field)
         if (vault, item) not in self._item_cache:
             self._load_item_to_cache(vault, item)
         fields = self._item_cache[(vault, item)]
@@ -319,11 +258,16 @@ class OnePasswordFileSystem(AbstractFileSystem):
     # fsspec AbstractFileSystem interface
     # ------------------------------------------------------------------
 
+    def _deny_partial_path(self, path: str) -> NoReturn:
+        """Reject – and record – a read of anything short of a full field path."""
+        log_access_denied(path, _PARTIAL_PATH_ERROR)
+        raise PermissionError(_PARTIAL_PATH_ERROR)
+
     def ls(self, path: str, detail: bool = True, **kwargs: Any) -> list:
         vault, item, field = _parse_path(path)
 
         if field is None:
-            raise PermissionError(_PARTIAL_PATH_ERROR)
+            self._deny_partial_path(path)
 
         # A field is a file, not a directory
         raise NotADirectoryError(f"op://{vault}/{item}/{field} is a file, not a directory")
@@ -332,7 +276,7 @@ class OnePasswordFileSystem(AbstractFileSystem):
         vault, item, field = _parse_path(path)
 
         if field is None:
-            raise PermissionError(_PARTIAL_PATH_ERROR)
+            self._deny_partial_path(path)
 
         value = self._get_cached_field(vault, item, field)
         size = len(value.encode()) if isinstance(value, str) else len(value or b"")
@@ -349,7 +293,7 @@ class OnePasswordFileSystem(AbstractFileSystem):
 
         vault, item, field = _parse_path(path)
         if vault is None or item is None or field is None:
-            raise PermissionError(_PARTIAL_PATH_ERROR)
+            self._deny_partial_path(path)
 
         value = self._get_cached_field(vault, item, field)
         return io.BytesIO(value.encode() if isinstance(value, str) else value)
@@ -357,6 +301,6 @@ class OnePasswordFileSystem(AbstractFileSystem):
     def cat_file(self, path: str, **kwargs: Any) -> bytes:
         vault, item, field = _parse_path(path)
         if vault is None or item is None or field is None:
-            raise PermissionError(_PARTIAL_PATH_ERROR)
+            self._deny_partial_path(path)
         value = self._get_cached_field(vault, item, field)
         return value.encode() if isinstance(value, str) else value

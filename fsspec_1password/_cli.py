@@ -1,6 +1,7 @@
 from argparse import ArgumentParser
 
-from ._core import OnePasswordFileSystem, logger
+from ._core import OnePasswordFileSystem
+from ._logging import logger
 
 
 def op_read_cli() -> None:
