@@ -72,7 +72,12 @@ fsspec_1password = ["py.typed"]
 
 
 [tool.pytest.ini_options]
-addopts = "-s"
+# The logging plugin is off because pytest>=9 attaches its capture handler
+# directly to every non-propagating logger, and both of this package's loggers
+# are non-propagating.  The library reads a handler it did not install as an
+# application asking for the records, which would make the whole suite run as
+# if an application were listening.  No test uses caplog.
+addopts = "-s -p no:logging"
 testpaths = ["fsspec_1password_tests"]
 
 
